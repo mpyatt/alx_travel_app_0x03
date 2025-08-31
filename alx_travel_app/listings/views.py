@@ -4,7 +4,7 @@ from rest_framework.response import Response
 
 from .models import Listing, Booking, Payment
 from .serializers import ListingSerializer, BookingSerializer, PaymentSerializer
-from .tasks import send_payment_confirmation_email
+from .tasks import send_payment_confirmation_email, send_booking_confirmation_email
 
 import os
 import uuid
@@ -16,6 +16,7 @@ from django.db import transaction
 
 # ---- Regular CRUD ViewSets ----
 
+
 class ListingViewSet(viewsets.ModelViewSet):
     queryset = Listing.objects.all()
     serializer_class = ListingSerializer
@@ -25,13 +26,18 @@ class ListingViewSet(viewsets.ModelViewSet):
 class BookingViewSet(viewsets.ModelViewSet):
     queryset = Booking.objects.all()
     serializer_class = BookingSerializer
-    permission_classes = [permissions.AllowAny]
+
+    def perform_create(self, serializer):
+        booking = serializer.save()
+        # If your Booking.id is a UUID, Celery handles str fine. If it's int, also fine.
+        send_booking_confirmation_email.delay(str(booking.id))
 
 
 # ---- Chapa Integration ----
 
 CHAPA_BASE_URL = getattr(settings, "CHAPA_BASE_URL", "https://api.chapa.co")
-CHAPA_SECRET_KEY = getattr(settings, "CHAPA_SECRET_KEY", os.environ.get("CHAPA_SECRET_KEY"))
+CHAPA_SECRET_KEY = getattr(
+    settings, "CHAPA_SECRET_KEY", os.environ.get("CHAPA_SECRET_KEY"))
 
 
 def _auth_headers():
@@ -86,7 +92,8 @@ class InitiatePaymentView(APIView):
         first_name = data.get("first_name") or booking.first_name
         last_name = data.get("last_name") or booking.last_name
 
-        missing = [k for k, v in {"email": email, "first_name": first_name, "last_name": last_name}.items() if not v]
+        missing = [k for k, v in {
+            "email": email, "first_name": first_name, "last_name": last_name}.items() if not v]
         if missing:
             return Response({"detail": f"Missing fields: {', '.join(missing)}"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -134,14 +141,16 @@ class InitiatePaymentView(APIView):
         except requests.RequestException as e:
             payment.status = Payment.Status.FAILED
             payment.init_response = {"error": str(e)}
-            payment.save(update_fields=["status", "init_response", "updated_at"])
+            payment.save(update_fields=[
+                         "status", "init_response", "updated_at"])
             return Response({"detail": "Failed to initiate payment."}, status=status.HTTP_502_BAD_GATEWAY)
 
         # Chapa may return 200 but error payload
         if str(init_json.get("status")).lower() not in ("success",):
             payment.status = Payment.Status.FAILED
             payment.init_response = init_json
-            payment.save(update_fields=["status", "init_response", "updated_at"])
+            payment.save(update_fields=[
+                         "status", "init_response", "updated_at"])
             return Response({"detail": "Payment initialization failed.", "chapa": init_json}, status=status.HTTP_502_BAD_GATEWAY)
 
         payment.init_response = init_json
@@ -149,11 +158,13 @@ class InitiatePaymentView(APIView):
 
         if not checkout_url:
             payment.status = Payment.Status.FAILED
-            payment.save(update_fields=["status", "init_response", "updated_at"])
+            payment.save(update_fields=[
+                         "status", "init_response", "updated_at"])
             return Response({"detail": "Chapa did not return a checkout_url."}, status=status.HTTP_502_BAD_GATEWAY)
 
         payment.checkout_url = checkout_url
-        payment.save(update_fields=["checkout_url", "init_response", "updated_at"])
+        payment.save(update_fields=["checkout_url",
+                     "init_response", "updated_at"])
 
         return Response({"checkout_url": checkout_url, "tx_ref": tx_ref}, status=status.HTTP_201_CREATED)
 
@@ -197,9 +208,11 @@ class VerifyPaymentView(APIView):
         else:
             new_status = Payment.Status.PENDING
 
-        payment.ref_id = data.get("reference") or data.get("ref_id") or payment.ref_id
+        payment.ref_id = data.get("reference") or data.get(
+            "ref_id") or payment.ref_id
         payment.status = new_status
-        payment.save(update_fields=["status", "ref_id", "verify_response", "updated_at"])
+        payment.save(update_fields=["status", "ref_id",
+                     "verify_response", "updated_at"])
 
         if new_status == Payment.Status.COMPLETED:
             try:
