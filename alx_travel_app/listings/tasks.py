@@ -1,0 +1,33 @@
+from celery import shared_task
+from django.core.mail import send_mail
+from django.conf import settings
+from .models import Payment
+
+@shared_task
+def send_payment_confirmation_email(payment_id: int):
+    payment = Payment.objects.select_related("booking", "booking__listing").get(id=payment_id)
+    booking = payment.booking
+
+    subject = f"Booking #{booking.id} payment received"
+    message = (
+        f"Hello {booking.first_name or ''} {booking.last_name or ''},\n\n"
+        f"We have received your payment of {payment.amount} {payment.currency} "
+        f"for Booking #{booking.id} ({booking.listing}).\n\n"
+        f"Transaction ref: {payment.tx_ref}\n"
+        f"Status: {payment.status}\n\nThank you!"
+    ).strip()
+
+    recipient = booking.email
+    if not recipient and hasattr(booking, "user") and getattr(booking.user, "email", None):
+        recipient = booking.user.email
+
+    if not recipient:
+        return
+
+    send_mail(
+        subject,
+        message,
+        getattr(settings, "DEFAULT_FROM_EMAIL", "no-reply@example.com"),
+        [recipient],
+        fail_silently=True,
+    )
